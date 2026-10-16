@@ -773,8 +773,33 @@ def test_a_header_that_parses_and_still_nests_too_deep_is_refused(tmp_path):
     """
     depth = 300
     path = _header(tmp_path, b'{"a":' + b"[" * depth + b"]" * depth + b"}")
-    with pytest.raises(streaming.ShardError, match="nests past"):
+    with pytest.raises(streaming.ShardError, match="nests deeper than this reads") as excinfo:
         streaming.read_header(path)
+    assert "See the sentence above" not in str(excinfo.value)
+
+
+def test_the_refusal_reads_the_same_whichever_check_catches_the_header(tmp_path, monkeypatch):
+    """Two checks refuse a deep header, and a reader must not be able to tell them apart.
+
+    Whether a parse reaches the recursion limit depends on the stack the process has, so the
+    100,001-bracket test above takes one branch on one machine and the other on another. This
+    forces each branch on purpose, so both are exercised everywhere, and asserts they give the
+    same sentence. Written because the two branches used to word it differently, and two tests
+    then disagreed about which one a crafted file was supposed to hit.
+    """
+    depth = 300
+    path = _header(tmp_path, b'{"a":' + b"[" * depth + b"]" * depth + b"}")
+
+    def exhausted(_blob):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(streaming.json, "loads", exhausted)
+        with pytest.raises(streaming.ShardError) as by_limit:
+            streaming.read_header(path)
+    with pytest.raises(streaming.ShardError) as by_depth:
+        streaming.read_header(path)
+    assert str(by_limit.value) == str(by_depth.value)
 
 
 def test_a_header_declaring_more_than_the_format_allows_is_refused(tmp_path):
